@@ -1,0 +1,566 @@
+diff --git a/src/main/java/appeng/block/crafting/PatternProviderBlock.java b/src/main/java/appeng/block/crafting/PatternProviderBlock.java
+index 06dcf4ddb..7f1e433ee 100644
+--- a/src/main/java/appeng/block/crafting/PatternProviderBlock.java
++++ b/src/main/java/appeng/block/crafting/PatternProviderBlock.java
+@@ -34,6 +34,7 @@
+ 
+ import appeng.block.AEBaseEntityBlock;
+ import appeng.blockentity.crafting.PatternProviderBlockEntity;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.menu.locator.MenuLocators;
+ import appeng.util.InteractionUtil;
+ import appeng.util.Platform;
+@@ -57,6 +58,10 @@ protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockSt
+     @Override
+     public void neighborChanged(BlockState state, Level level, BlockPos pos, Block block, BlockPos fromPos,
+             boolean isMoving) {
++        if (TickHandler.deferOffMain(level, () -> neighborChanged(state, level, pos.immutable(), block,
++                fromPos.immutable(), isMoving))) {
++            return;
++        }
+         var be = this.getBlockEntity(level, pos);
+         if (be != null) {
+             be.getLogic().updateRedstoneState();
+diff --git a/src/main/java/appeng/block/networking/CableBusBlock.java b/src/main/java/appeng/block/networking/CableBusBlock.java
+index 59dbf7fda..dd5aefc38 100644
+--- a/src/main/java/appeng/block/networking/CableBusBlock.java
++++ b/src/main/java/appeng/block/networking/CableBusBlock.java
+@@ -81,6 +81,7 @@
+ import appeng.client.render.cablebus.CableBusBakedModel;
+ import appeng.client.render.cablebus.CableBusBreakingParticle;
+ import appeng.client.render.cablebus.CableBusRenderState;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.integration.abstraction.IAEFacade;
+ import appeng.parts.ICableBusContainer;
+ import appeng.parts.NullCableBusContainer;
+@@ -196,6 +197,13 @@ public ItemStack getCloneItemStack(BlockState state, HitResult target, LevelRead
+     public void neighborChanged(BlockState state, Level level, BlockPos pos, Block blockIn, BlockPos fromPos,
+             boolean isMoving) {
+         if (!level.isClientSide()) {
++            if (!TickHandler.isMainThread()) {
++                var immutablePos = pos.immutable();
++                var immutableFrom = fromPos.immutable();
++                TickHandler.instance().addCallable(level,
++                        () -> this.cb(level, immutablePos).onNeighborChanged(level, immutablePos, immutableFrom));
++                return;
++            }
+             this.cb(level, pos).onNeighborChanged(level, pos, fromPos);
+         }
+     }
+@@ -333,6 +341,14 @@ public BlockState updateShape(BlockState blockState, Direction facing, BlockStat
+ 
+     @Override
+     public void onNeighborChange(BlockState state, LevelReader level, BlockPos pos, BlockPos neighbor) {
++        if (!TickHandler.isMainThread() && level instanceof ServerLevel serverLevel) {
++            var immutablePos = pos.immutable();
++            var immutableNeighbor = neighbor.immutable();
++            TickHandler.instance().addCallable(serverLevel,
++                    () -> this.cb(serverLevel, immutablePos).onNeighborChanged(serverLevel, immutablePos,
++                            immutableNeighbor));
++            return;
++        }
+         this.cb(level, pos).onNeighborChanged(level, pos, neighbor);
+     }
+ 
+diff --git a/src/main/java/appeng/block/spatial/SpatialIOPortBlock.java b/src/main/java/appeng/block/spatial/SpatialIOPortBlock.java
+index 879cc2f87..4d7153daa 100644
+--- a/src/main/java/appeng/block/spatial/SpatialIOPortBlock.java
++++ b/src/main/java/appeng/block/spatial/SpatialIOPortBlock.java
+@@ -32,6 +32,7 @@
+ import appeng.api.orientation.OrientationStrategies;
+ import appeng.block.AEBaseEntityBlock;
+ import appeng.blockentity.spatial.SpatialIOPortBlockEntity;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.menu.MenuOpener;
+ import appeng.menu.implementations.SpatialIOPortMenu;
+ import appeng.menu.locator.MenuLocators;
+@@ -49,6 +50,10 @@ public SpatialIOPortBlock() {
+     @Override
+     public void neighborChanged(BlockState state, Level level, BlockPos pos, Block blockIn, BlockPos fromPos,
+             boolean isMoving) {
++        if (TickHandler.deferOffMain(level, () -> neighborChanged(state, level, pos.immutable(), blockIn,
++                fromPos.immutable(), isMoving))) {
++            return;
++        }
+         final SpatialIOPortBlockEntity te = this.getBlockEntity(level, pos);
+         if (te != null) {
+             te.updateRedstoneState();
+diff --git a/src/main/java/appeng/block/storage/IOPortBlock.java b/src/main/java/appeng/block/storage/IOPortBlock.java
+index a73e88caa..67ead9cc5 100644
+--- a/src/main/java/appeng/block/storage/IOPortBlock.java
++++ b/src/main/java/appeng/block/storage/IOPortBlock.java
+@@ -32,6 +32,7 @@
+ import appeng.api.orientation.OrientationStrategies;
+ import appeng.block.AEBaseEntityBlock;
+ import appeng.blockentity.storage.IOPortBlockEntity;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.menu.MenuOpener;
+ import appeng.menu.implementations.IOPortMenu;
+ import appeng.menu.locator.MenuLocators;
+@@ -49,6 +50,10 @@ public IOPortBlock() {
+     @Override
+     public void neighborChanged(BlockState state, Level level, BlockPos pos, Block blockIn, BlockPos fromPos,
+             boolean isMoving) {
++        if (TickHandler.deferOffMain(level, () -> neighborChanged(state, level, pos.immutable(), blockIn,
++                fromPos.immutable(), isMoving))) {
++            return;
++        }
+         final IOPortBlockEntity te = this.getBlockEntity(level, pos);
+         if (te != null) {
+             te.updateRedstoneState();
+diff --git a/src/main/java/appeng/blockentity/storage/MEChestBlockEntity.java b/src/main/java/appeng/blockentity/storage/MEChestBlockEntity.java
+index c1977d9df..9cf081f93 100644
+--- a/src/main/java/appeng/blockentity/storage/MEChestBlockEntity.java
++++ b/src/main/java/appeng/blockentity/storage/MEChestBlockEntity.java
+@@ -80,6 +80,7 @@
+ import appeng.core.localization.GuiText;
+ import appeng.core.localization.PlayerMessages;
+ import appeng.helpers.IPriorityHost;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.me.helpers.MachineSource;
+ import appeng.me.storage.DelegatingMEInventory;
+ import appeng.menu.ISubMenu;
+@@ -97,6 +98,8 @@ public class MEChestBlockEntity extends AENetworkedPoweredBlockEntity
+ 
+     private static final Logger LOG = LoggerFactory.getLogger(MEChestBlockEntity.class);
+ 
++    private volatile boolean tickQueued;
++
+     private final AppEngInternalInventory inputInventory = new AppEngInternalInventory(this, 1);
+     private final AppEngInternalInventory cellInventory = new AppEngInternalInventory(this, 1);
+     private final InternalInventory internalInventory = new CombinedInternalInventory(this.inputInventory,
+@@ -311,6 +314,22 @@ protected double extractAEPower(double amt, Actionable mode) {
+ 
+     @Override
+     public void serverTick() {
++        // Grid storage and energy are main-thread state; one queued tick at a time
++        if (!TickHandler.isMainThread()) {
++            if (!tickQueued) {
++                tickQueued = true;
++                TickHandler.instance().addCallable(level, this::tickOnMain);
++            }
++            return;
++        }
++        tickOnMain();
++    }
++
++    private void tickOnMain() {
++        tickQueued = false;
++        if (isRemoved()) {
++            return;
++        }
+         var grid = getMainNode().getGrid();
+ 
+         // Handle energy-use when not grid-powered
+diff --git a/src/main/java/appeng/hooks/ticking/TickHandler.java b/src/main/java/appeng/hooks/ticking/TickHandler.java
+index 9211fb0be..be0f5e978 100644
+--- a/src/main/java/appeng/hooks/ticking/TickHandler.java
++++ b/src/main/java/appeng/hooks/ticking/TickHandler.java
+@@ -18,16 +18,16 @@
+ 
+ package appeng.hooks.ticking;
+ 
++import java.util.ArrayDeque;
+ import java.util.ArrayList;
+ import java.util.Collection;
++import java.util.HashMap;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Objects;
+ import java.util.Queue;
+ import java.util.Set;
+-import java.util.concurrent.ConcurrentHashMap;
+-import java.util.concurrent.ConcurrentLinkedQueue;
+ import java.util.concurrent.TimeUnit;
+ import java.util.function.Consumer;
+ 
+@@ -48,7 +48,6 @@
+ import net.neoforged.neoforge.common.NeoForge;
+ import net.neoforged.neoforge.event.level.ChunkEvent;
+ import net.neoforged.neoforge.event.level.LevelEvent;
+-import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
+ import net.neoforged.neoforge.event.tick.LevelTickEvent;
+ import net.neoforged.neoforge.event.tick.ServerTickEvent;
+ 
+@@ -69,9 +68,9 @@ public class TickHandler {
+     private static final int TIME_LIMIT_PROCESS_QUEUE_MILLISECONDS = 25;
+ 
+     private static final TickHandler INSTANCE = new TickHandler();
+-    private final Queue<ILevelRunnable> serverQueue = new ConcurrentLinkedQueue<>();
++    private final Queue<ILevelRunnable> serverQueue = new ArrayDeque<>();
+     private final Multimap<LevelAccessor, CraftingCalculation> craftingJobs = LinkedListMultimap.create();
+-    private final Map<LevelAccessor, Queue<ILevelRunnable>> callQueue = new ConcurrentHashMap<>();
++    private final Map<LevelAccessor, Queue<ILevelRunnable>> callQueue = new HashMap<>();
+     private final ServerBlockEntityRepo blockEntities = new ServerBlockEntityRepo();
+     private final ServerGridRepo grids = new ServerGridRepo();
+ 
+@@ -87,11 +86,6 @@ public class TickHandler {
+ 
+     private long tickCounter;
+ 
+-    /**
+-     * Server thread, captured at server start. Null (before start, tests) counts as the main thread.
+-     */
+-    private static volatile Thread mainThread;
+-
+     public static TickHandler instance() {
+         return INSTANCE;
+     }
+@@ -99,28 +93,7 @@ public static TickHandler instance() {
+     private TickHandler() {
+     }
+ 
+-    /**
+-     * Runs {@code task} on the main thread at the next tick of {@code level} when called from any other thread (region
+-     * workers).
+-     *
+-     * @return true if deferred, false if the caller is on the main thread (or {@code level} is client-side) and must
+-     *         run the task itself
+-     */
+-    public static boolean deferOffMain(LevelAccessor level, Runnable task) {
+-        if (level.isClientSide() || isMainThread()) {
+-            return false;
+-        }
+-        INSTANCE.addCallable(level, task);
+-        return true;
+-    }
+-
+-    public static boolean isMainThread() {
+-        var main = mainThread;
+-        return main == null || main == Thread.currentThread();
+-    }
+-
+     public void init() {
+-        NeoForge.EVENT_BUS.addListener((ServerAboutToStartEvent e) -> mainThread = Thread.currentThread());
+         NeoForge.EVENT_BUS.addListener(this::onServerTickStart);
+         NeoForge.EVENT_BUS.addListener(this::onServerTickEnd);
+         NeoForge.EVENT_BUS.addListener(this::onServerLevelTickStart);
+@@ -151,7 +124,14 @@ public void addCallable(LevelAccessor level, ILevelRunnable c) {
+         if (level == null) {
+             this.serverQueue.add(c);
+         } else {
+-            this.callQueue.computeIfAbsent(level, k -> new ConcurrentLinkedQueue<>()).add(c);
++            Queue<ILevelRunnable> queue = this.callQueue.get(level);
++
++            if (queue == null) {
++                queue = new ArrayDeque<>();
++                this.callQueue.put(level, queue);
++            }
++
++            queue.add(c);
+         }
+     }
+ 
+@@ -253,9 +233,13 @@ private void onServerLevelTickStart(LevelTickEvent.Pre event) {
+         if (!(event.getLevel() instanceof ServerLevel level)) {
+             return;
+         }
+-        var queue = this.callQueue.get(level);
+-        // Bounded to the entries present now: tasks added while draining run next tick
+-        processQueueElementsRemaining += this.processQueue(queue, level, queue == null ? 0 : queue.size());
++        var queue = this.callQueue.remove(level);
++        processQueueElementsRemaining += this.processQueue(queue, level);
++        var newQueue = this.callQueue.put(level, queue);
++        // Some new tasks may have been added while we were processing the queue
++        if (newQueue != null) {
++            queue.addAll(newQueue);
++        }
+ 
+         // tick networks
+         this.grids.updateNetworks();
+@@ -322,7 +306,7 @@ private void onServerTickEnd(ServerTickEvent.Post event) {
+         }
+ 
+         // cross level queue.
+-        processQueueElementsRemaining += this.processQueue(this.serverQueue, null, Integer.MAX_VALUE);
++        processQueueElementsRemaining += this.processQueue(this.serverQueue, null);
+ 
+         if (this.stopWatch.elapsed(TimeUnit.MILLISECONDS) > TIME_LIMIT_PROCESS_QUEUE_MILLISECONDS) {
+             AELog.warn("Exceeded time limit of %d ms after processing %d queued tick callbacks (%d remain)",
+@@ -369,12 +353,14 @@ private void simulateCraftingJobs(LevelAccessor level) {
+      * Ready the block entities in this level. server-side only.
+      */
+     private void readyBlockEntities(ServerLevel level) {
+-        // Make a copy because this set may be modified when new chunks are loaded by an onReady call below
+-        long[] workSet = blockEntities.pendingChunks(level);
+-        if (workSet == null) {
++        var levelQueue = blockEntities.getBlockEntities(level);
++        if (levelQueue == null) {
+             return;
+         }
+ 
++        // Make a copy because this set may be modified when new chunks are loaded by an onReady call below
++        long[] workSet = levelQueue.keySet().toLongArray();
++
+         for (long packedChunkPos : workSet) {
+             // Readies all of our block entities in this chunk as soon as it can tick BEs
+             // The following test is equivalent to ServerLevel#isPositionTickingWithEntitiesLoaded
+@@ -382,7 +368,7 @@ private void readyBlockEntities(ServerLevel level) {
+                 // Take the currently waiting block entities for this chunk and ready them all. Should more block
+                 // entities be added to this chunk while we're working on it, a new list will be added automatically and
+                 // we'll work on this chunk again next tick.
+-                var chunkQueue = blockEntities.takeChunk(level, packedChunkPos);
++                var chunkQueue = levelQueue.remove(packedChunkPos);
+                 if (chunkQueue == null) {
+                     AELog.warn("Chunk %s was unloaded while we were readying block entities",
+                             new ChunkPos(packedChunkPos));
+@@ -417,10 +403,9 @@ private void readyBlockEntities(ServerLevel level) {
+      *
+      * @param queue the queue to process
+      * @param level the level in which the queue is processed or null for the server queue
+-     * @param limit maximum number of callbacks to run
+      * @return the amount of remaining callbacks
+      */
+-    private int processQueue(Queue<ILevelRunnable> queue, Level level, int limit) {
++    private int processQueue(Queue<ILevelRunnable> queue, Level level) {
+         if (queue == null) {
+             return 0;
+         }
+@@ -428,10 +413,10 @@ private int processQueue(Queue<ILevelRunnable> queue, Level level, int limit) {
+         // start the clock
+         stopWatch.start();
+ 
+-        ILevelRunnable next;
+-        while (limit-- > 0 && (next = queue.poll()) != null) {
++        while (!queue.isEmpty()) {
+             try {
+-                next.call(level);
++                // call the first queue element.
++                queue.poll().call(level);
+                 this.processQueueElementsProcessed++;
+ 
+                 if (stopWatch.elapsed(TimeUnit.MILLISECONDS) > TIME_LIMIT_PROCESS_QUEUE_MILLISECONDS) {
+diff --git a/src/main/java/appeng/me/ManagedGridNode.java b/src/main/java/appeng/me/ManagedGridNode.java
+index 0c92e8052..5e751c63d 100644
+--- a/src/main/java/appeng/me/ManagedGridNode.java
++++ b/src/main/java/appeng/me/ManagedGridNode.java
+@@ -47,6 +47,7 @@
+ import appeng.api.stacks.AEItemKey;
+ import appeng.api.util.AEColor;
+ import appeng.core.AELog;
++import appeng.hooks.ticking.TickHandler;
+ 
+ /**
+  * Manages the lifecycle of a {@link IGridNode}.
+@@ -118,6 +119,11 @@ private <SC extends IGridNodeService> void addService(GridNode node, Class<SC> s
+     @Nullable
+     private GridNode node = null;
+ 
++    /**
++     * Set while a {@link #create} issued off the main thread is queued; cleared by {@link #destroy()}.
++     */
++    private volatile boolean createDeferred;
++
+     public <T> ManagedGridNode(T nodeOwner, IGridNodeListener<? super T> listener) {
+         this.initData = new InitData<>(nodeOwner, listener);
+     }
+@@ -139,7 +145,11 @@ public ManagedGridNode setTagName(String tagName) {
+ 
+     @Override
+     public void destroy() {
++        this.createDeferred = false;
+         if (this.node != null) {
++            if (TickHandler.deferOffMain(this.node.getLevel(), this::destroy)) {
++                return;
++            }
+             this.node.destroy();
+             this.node = null;
+         }
+@@ -151,9 +161,28 @@ public void create(Level level, @Nullable BlockPos blockPos) {
+         var initData = getInitData();
+         initData.level = level;
+         initData.pos = blockPos;
++
++        if (!level.isClientSide()) {
++            this.createDeferred = true;
++            if (TickHandler.deferOffMain(level, () -> completeCreate(initData))) {
++                return;
++            }
++        }
++        completeCreate(initData);
++    }
++
++    private void completeCreate(InitData<?> initData) {
++        if (initData.level.isClientSide()) {
++            this.initData = null;
++            return;
++        }
++        if (!this.createDeferred) {
++            return; // destroyed while queued
++        }
++        this.createDeferred = false;
+         this.initData = null;
+ 
+-        if (this.node == null && !initData.level.isClientSide()) {
++        if (this.node == null) {
+             createNode(initData);
+         }
+     }
+@@ -272,7 +301,10 @@ public ManagedGridNode setExposedOnSides(Set<Direction> directions) {
+         if (node == null) {
+             getInitData().exposedOnSides = ImmutableSet.copyOf(directions);
+         } else if (node instanceof InWorldGridNode inWorldNode) {
+-            inWorldNode.setExposedOnSides(directions);
++            var sides = ImmutableSet.copyOf(directions);
++            if (!TickHandler.deferOffMain(node.getLevel(), () -> inWorldNode.setExposedOnSides(sides))) {
++                inWorldNode.setExposedOnSides(directions);
++            }
+         }
+         return this;
+     }
+@@ -304,7 +336,10 @@ public ManagedGridNode setGridColor(AEColor gridColor) {
+         if (this.node == null) {
+             getInitData().gridColor = gridColor;
+         } else {
+-            node.setGridColor(gridColor);
++            var n = node;
++            if (!TickHandler.deferOffMain(n.getLevel(), () -> n.setGridColor(gridColor))) {
++                n.setGridColor(gridColor);
++            }
+         }
+         return this;
+     }
+diff --git a/src/main/java/appeng/me/cluster/MBCalculator.java b/src/main/java/appeng/me/cluster/MBCalculator.java
+index 73ccf49bc..84687d012 100644
+--- a/src/main/java/appeng/me/cluster/MBCalculator.java
++++ b/src/main/java/appeng/me/cluster/MBCalculator.java
+@@ -27,12 +27,15 @@
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.block.entity.BlockEntity;
+ 
++import appeng.hooks.ticking.TickHandler;
++
+ public abstract class MBCalculator<TBlockEntity extends IAEMultiBlock<TCluster>, TCluster extends IAECluster> {
+ 
+     /**
+      * To avoid recursive cluster rebuilds, we use a global field to prevent this from happening. This is set to the
+      * cluster that is currently causing a Multiblock modification.
+      */
++    // Main thread only: every entry point that can run on a region worker defers via TickHandler.deferOffMain
+     private static WeakReference<IAECluster> modificationInProgress = new WeakReference<>(null);
+ 
+     protected final TBlockEntity target;
+@@ -57,6 +60,10 @@ public static boolean isModificationInProgress() {
+     }
+ 
+     public void updateMultiblockAfterNeighborUpdate(ServerLevel level, BlockPos loc, BlockPos changedPos) {
++        if (TickHandler.deferOffMain(level, () -> updateMultiblockAfterNeighborUpdate(level, loc.immutable(),
++                changedPos.immutable()))) {
++            return;
++        }
+         boolean recheck;
+ 
+         TCluster cluster = target.getCluster();
+@@ -82,6 +89,9 @@ public void updateMultiblockAfterNeighborUpdate(ServerLevel level, BlockPos loc,
+     }
+ 
+     public void calculateMultiblock(ServerLevel level, BlockPos loc) {
++        if (TickHandler.deferOffMain(level, () -> calculateMultiblock(level, loc.immutable()))) {
++            return;
++        }
+         if (isModificationInProgress()) {
+             return;
+         }
+diff --git a/src/main/java/appeng/me/cluster/implementations/CraftingCPUCluster.java b/src/main/java/appeng/me/cluster/implementations/CraftingCPUCluster.java
+index 3737abb85..da3623550 100644
+--- a/src/main/java/appeng/me/cluster/implementations/CraftingCPUCluster.java
++++ b/src/main/java/appeng/me/cluster/implementations/CraftingCPUCluster.java
+@@ -49,6 +49,7 @@
+ import appeng.blockentity.crafting.CraftingBlockEntity;
+ import appeng.blockentity.crafting.CraftingMonitorBlockEntity;
+ import appeng.crafting.execution.CraftingCpuLogic;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.me.cluster.IAECluster;
+ import appeng.me.cluster.MBCalculator;
+ import appeng.me.helpers.MachineSource;
+@@ -109,6 +110,10 @@ public void destroy() {
+         if (this.isDestroyed) {
+             return;
+         }
++        if (!TickHandler.isMainThread()) {
++            TickHandler.instance().addCallable(this.blockEntities.getFirst().getLevel(), this::destroy);
++            return;
++        }
+         this.isDestroyed = true;
+ 
+         boolean ownsModification = !MBCalculator.isModificationInProgress();
+diff --git a/src/main/java/appeng/me/cluster/implementations/QuantumCluster.java b/src/main/java/appeng/me/cluster/implementations/QuantumCluster.java
+index 01f0edccc..292262221 100644
+--- a/src/main/java/appeng/me/cluster/implementations/QuantumCluster.java
++++ b/src/main/java/appeng/me/cluster/implementations/QuantumCluster.java
+@@ -35,6 +35,7 @@
+ import appeng.api.networking.security.IActionHost;
+ import appeng.blockentity.qnb.QuantumBridgeBlockEntity;
+ import appeng.core.AELog;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.me.cluster.IAECluster;
+ import appeng.me.cluster.MBCalculator;
+ import appeng.me.service.helpers.ConnectionWrapper;
+@@ -69,6 +70,10 @@ public void onUnload(final LevelEvent.Unload e) {
+ 
+     @Override
+     public void updateStatus(boolean updateGrid) {
++        if (!TickHandler.isMainThread()) {
++            TickHandler.instance().addCallable(this.center.getLevel(), () -> updateStatus(updateGrid));
++            return;
++        }
+ 
+         final long qe = this.center.getQEFrequency();
+ 
+@@ -193,6 +198,10 @@ public void destroy() {
+         if (this.isDestroyed) {
+             return;
+         }
++        if (!TickHandler.isMainThread()) {
++            TickHandler.instance().addCallable(this.center.getLevel(), this::destroy);
++            return;
++        }
+         this.isDestroyed = true;
+ 
+         MBCalculator.setModificationInProgress(this);
+diff --git a/src/main/java/appeng/me/cluster/implementations/SpatialPylonCluster.java b/src/main/java/appeng/me/cluster/implementations/SpatialPylonCluster.java
+index 38ee78acb..35864666c 100644
+--- a/src/main/java/appeng/me/cluster/implementations/SpatialPylonCluster.java
++++ b/src/main/java/appeng/me/cluster/implementations/SpatialPylonCluster.java
+@@ -26,6 +26,7 @@
+ import net.minecraft.server.level.ServerLevel;
+ 
+ import appeng.blockentity.spatial.SpatialPylonBlockEntity;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.me.cluster.IAECluster;
+ import appeng.me.cluster.MBCalculator;
+ 
+@@ -74,6 +75,10 @@ public void destroy() {
+         if (this.isDestroyed) {
+             return;
+         }
++        if (!TickHandler.isMainThread()) {
++            TickHandler.instance().addCallable(this.line.getFirst().getLevel(), this::destroy);
++            return;
++        }
+         this.isDestroyed = true;
+ 
+         MBCalculator.setModificationInProgress(this);
+diff --git a/src/main/java/appeng/parts/misc/ToggleBusPart.java b/src/main/java/appeng/parts/misc/ToggleBusPart.java
+index d77446f5e..a22bf2757 100644
+--- a/src/main/java/appeng/parts/misc/ToggleBusPart.java
++++ b/src/main/java/appeng/parts/misc/ToggleBusPart.java
+@@ -41,6 +41,7 @@
+ import appeng.api.parts.IPartModel;
+ import appeng.api.util.AECableType;
+ import appeng.core.AppEng;
++import appeng.hooks.ticking.TickHandler;
+ import appeng.items.parts.PartModels;
+ import appeng.parts.AEBasePart;
+ import appeng.parts.PartModel;
+@@ -181,6 +182,9 @@ public void onPlacement(Player player) {
+     }
+ 
+     private void updateInternalState() {
++        if (TickHandler.deferOffMain(getLevel(), this::updateInternalState)) {
++            return;
++        }
+         final boolean intention = this.isEnabled();
+         if (intention == (this.connection == null)
+                 && this.getMainNode().getNode() != null && this.getOuterNode().getNode() != null) {
