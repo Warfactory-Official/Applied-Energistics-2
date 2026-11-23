@@ -52,7 +52,7 @@ jobs:
         working-directory: src
         run: |
           git config user.name ci && git config user.email ci@invalid
-          sh ./gradlew jar -x test -Pversion=19.2.20 --no-daemon
+          bash ./gradlew jar -x test -Pversion=19.2.20 --no-daemon
 
       - name: Finalize jar
         run: |
