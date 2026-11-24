@@ -1,0 +1,409 @@
+diff --git a/src/main/java/appeng/api/features/Locatables.java b/src/main/java/appeng/api/features/Locatables.java
+index 80ac39774..3906a0d5c 100644
+--- a/src/main/java/appeng/api/features/Locatables.java
++++ b/src/main/java/appeng/api/features/Locatables.java
+@@ -23,9 +23,9 @@
+ 
+ package appeng.api.features;
+ 
+-import java.util.HashMap;
+ import java.util.Map;
+ import java.util.Objects;
++import java.util.concurrent.ConcurrentHashMap;
+ 
+ import org.jetbrains.annotations.Nullable;
+ 
+@@ -41,7 +41,7 @@ public final class Locatables {
+     private static final Type<IActionHost> QUANTUM_NETWORK_BRIDGES = new Type<>();
+ 
+     public static class Type<T> {
+-        private final Map<Long, T> objects = new HashMap<>();
++        private final Map<Long, T> objects = new ConcurrentHashMap<>();
+ 
+         /**
+          * Gets the currently registered locatable object for a given key. This only works server-side, which is why a
+diff --git a/src/main/java/appeng/api/features/PlayerRegistryInternal.java b/src/main/java/appeng/api/features/PlayerRegistryInternal.java
+index 8edf31480..f59707259 100644
+--- a/src/main/java/appeng/api/features/PlayerRegistryInternal.java
++++ b/src/main/java/appeng/api/features/PlayerRegistryInternal.java
+@@ -21,9 +21,7 @@
+ import java.util.Map;
+ import java.util.Objects;
+ import java.util.UUID;
+-
+-import com.google.common.collect.BiMap;
+-import com.google.common.collect.HashBiMap;
++import java.util.concurrent.ConcurrentHashMap;
+ 
+ import org.jetbrains.annotations.Nullable;
+ 
+@@ -50,7 +48,12 @@ final class PlayerRegistryInternal extends AESavedData implements IPlayerRegistr
+     private static final String TAG_PLAYER_IDS = "playerIds";
+     private static final String TAG_PROFILE_IDS = "profileIds";
+ 
+-    private final BiMap<UUID, Integer> mapping = HashBiMap.create();
++    // Lock-free reads from any thread; writers synchronized. DimensionDataStorage is not thread-safe, hence `cached`
++    // (primed on server start).
++    private static volatile PlayerRegistryInternal cached;
++
++    private final Map<UUID, Integer> mapping = new ConcurrentHashMap<>();
++    private final Map<Integer, UUID> reverse = new ConcurrentHashMap<>();
+ 
+     private final MinecraftServer server;
+ 
+@@ -62,22 +65,28 @@ private PlayerRegistryInternal(MinecraftServer server) {
+     }
+ 
+     static PlayerRegistryInternal get(MinecraftServer server) {
++        var c = cached;
++        if (c != null && c.server == server) {
++            return c;
++        }
+         var overworld = server.getLevel(ServerLevel.OVERWORLD);
+         if (overworld == null) {
+             throw new IllegalStateException("Cannot retrieve player data for a server that has no overworld.");
+         }
+-        return overworld.getDataStorage().computeIfAbsent(
++        c = overworld.getDataStorage().computeIfAbsent(
+                 new Factory<>(
+                         () -> new PlayerRegistryInternal(server),
+                         (nbt, provider) -> PlayerRegistryInternal.load(server, nbt),
+                         null),
+                 PlayerRegistryInternal.NAME);
++        cached = c;
++        return c;
+     }
+ 
+     @Nullable
+     @Override
+     public UUID getProfileId(int playerId) {
+-        return this.mapping.inverse().get(playerId);
++        return this.reverse.get(playerId);
+     }
+ 
+     @Override
+@@ -87,8 +96,15 @@ public int getPlayerId(UUID profileId) {
+         Integer playerId = mapping.get(profileId);
+ 
+         if (playerId == null) {
+-            playerId = this.nextPlayerId++;
+-            this.mapping.put(profileId, playerId);
++            synchronized (this) {
++                playerId = mapping.get(profileId);
++                if (playerId != null) {
++                    return playerId;
++                }
++                playerId = this.nextPlayerId++;
++                this.reverse.put(playerId, profileId);
++                this.mapping.put(profileId, playerId);
++            }
+             setDirty();
+ 
+             var player = server.getPlayerList().getPlayer(profileId);
+@@ -115,6 +131,7 @@ private static PlayerRegistryInternal load(MinecraftServer server, CompoundTag n
+             UUID profileId = new UUID(profileIds[i * 2], profileIds[i * 2 + 1]);
+             highestPlayerId = Math.max(playerId, highestPlayerId);
+             result.mapping.put(profileId, playerId);
++            result.reverse.put(playerId, profileId);
+             AELog.debug("AE player ID %s is assigned to profile ID %s", playerId, profileId);
+         }
+         result.nextPlayerId = highestPlayerId + 1;
+@@ -122,7 +139,7 @@ private static PlayerRegistryInternal load(MinecraftServer server, CompoundTag n
+     }
+ 
+     @Override
+-    public CompoundTag save(CompoundTag compound, HolderLookup.Provider registries) {
++    public synchronized CompoundTag save(CompoundTag compound, HolderLookup.Provider registries) {
+         int index = 0;
+         int[] playerIds = new int[mapping.size()];
+         long[] profileIds = new long[mapping.size() * 2];
+diff --git a/src/main/java/appeng/blockentity/qnb/QuantumBridgeBlockEntity.java b/src/main/java/appeng/blockentity/qnb/QuantumBridgeBlockEntity.java
+index cc903a2d3..c6052b869 100644
+--- a/src/main/java/appeng/blockentity/qnb/QuantumBridgeBlockEntity.java
++++ b/src/main/java/appeng/blockentity/qnb/QuantumBridgeBlockEntity.java
+@@ -21,6 +21,7 @@
+ import java.util.Date;
+ import java.util.EnumSet;
+ import java.util.Set;
++import java.util.concurrent.atomic.AtomicInteger;
+ 
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Direction;
+@@ -55,7 +56,7 @@ public class QuantumBridgeBlockEntity extends AENetworkedInvBlockEntity
+ 
+     public static final ModelProperty<QnbFormedState> FORMED_STATE = new ModelProperty<>();
+ 
+-    private static int singularitySeed = 0;
++    private static final AtomicInteger singularitySeed = new AtomicInteger();
+ 
+     private final byte corner = 16;
+     private final AppEngInternalInventory internalInventory = new AppEngInternalInventory(this, 1, 1);
+@@ -319,7 +320,7 @@ public static boolean isValidEntangledSingularity(ItemStack stack) {
+     }
+ 
+     public static void assignFrequency(ItemStack stack) {
+-        var frequency = new Date().getTime() * 100 + singularitySeed++ % 100;
++        var frequency = new Date().getTime() * 100 + singularitySeed.getAndIncrement() % 100;
+         stack.set(AEComponents.ENTANGLED_SINGULARITY_ID, frequency);
+     }
+ }
+diff --git a/src/main/java/appeng/hooks/ticking/TickHandler.java b/src/main/java/appeng/hooks/ticking/TickHandler.java
+index be0f5e978..370a2f2fe 100644
+--- a/src/main/java/appeng/hooks/ticking/TickHandler.java
++++ b/src/main/java/appeng/hooks/ticking/TickHandler.java
+@@ -18,16 +18,16 @@
+ 
+ package appeng.hooks.ticking;
+ 
+-import java.util.ArrayDeque;
+ import java.util.ArrayList;
+ import java.util.Collection;
+-import java.util.HashMap;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Objects;
+ import java.util.Queue;
+ import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentLinkedQueue;
+ import java.util.concurrent.TimeUnit;
+ import java.util.function.Consumer;
+ 
+@@ -48,9 +48,12 @@
+ import net.neoforged.neoforge.common.NeoForge;
+ import net.neoforged.neoforge.event.level.ChunkEvent;
+ import net.neoforged.neoforge.event.level.LevelEvent;
++import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
++import net.neoforged.neoforge.event.server.ServerStartedEvent;
+ import net.neoforged.neoforge.event.tick.LevelTickEvent;
+ import net.neoforged.neoforge.event.tick.ServerTickEvent;
+ 
++import appeng.api.features.IPlayerRegistry;
+ import appeng.blockentity.AEBaseBlockEntity;
+ import appeng.core.AEConfig;
+ import appeng.core.AELog;
+@@ -68,9 +71,9 @@ public class TickHandler {
+     private static final int TIME_LIMIT_PROCESS_QUEUE_MILLISECONDS = 25;
+ 
+     private static final TickHandler INSTANCE = new TickHandler();
+-    private final Queue<ILevelRunnable> serverQueue = new ArrayDeque<>();
++    private final Queue<ILevelRunnable> serverQueue = new ConcurrentLinkedQueue<>();
+     private final Multimap<LevelAccessor, CraftingCalculation> craftingJobs = LinkedListMultimap.create();
+-    private final Map<LevelAccessor, Queue<ILevelRunnable>> callQueue = new HashMap<>();
++    private final Map<LevelAccessor, Queue<ILevelRunnable>> callQueue = new ConcurrentHashMap<>();
+     private final ServerBlockEntityRepo blockEntities = new ServerBlockEntityRepo();
+     private final ServerGridRepo grids = new ServerGridRepo();
+ 
+@@ -86,6 +89,11 @@ public class TickHandler {
+ 
+     private long tickCounter;
+ 
++    /**
++     * Server thread, captured at server start. Null (before start, tests) counts as the main thread.
++     */
++    private static volatile Thread mainThread;
++
+     public static TickHandler instance() {
+         return INSTANCE;
+     }
+@@ -93,7 +101,30 @@ public static TickHandler instance() {
+     private TickHandler() {
+     }
+ 
++    /**
++     * Runs {@code task} on the main thread at the next tick of {@code level} when called from any other thread (region
++     * workers).
++     *
++     * @return true if deferred, false if the caller is on the main thread (or {@code level} is client-side) and must
++     *         run the task itself
++     */
++    public static boolean deferOffMain(LevelAccessor level, Runnable task) {
++        if (level.isClientSide() || isMainThread()) {
++            return false;
++        }
++        INSTANCE.addCallable(level, task);
++        return true;
++    }
++
++    public static boolean isMainThread() {
++        var main = mainThread;
++        return main == null || main == Thread.currentThread();
++    }
++
+     public void init() {
++        NeoForge.EVENT_BUS.addListener((ServerAboutToStartEvent e) -> mainThread = Thread.currentThread());
++        // DimensionDataStorage is not thread-safe: load the registry here, workers only see the cached instance
++        NeoForge.EVENT_BUS.addListener((ServerStartedEvent e) -> IPlayerRegistry.getMapping(e.getServer()));
+         NeoForge.EVENT_BUS.addListener(this::onServerTickStart);
+         NeoForge.EVENT_BUS.addListener(this::onServerTickEnd);
+         NeoForge.EVENT_BUS.addListener(this::onServerLevelTickStart);
+@@ -124,14 +155,7 @@ public void addCallable(LevelAccessor level, ILevelRunnable c) {
+         if (level == null) {
+             this.serverQueue.add(c);
+         } else {
+-            Queue<ILevelRunnable> queue = this.callQueue.get(level);
+-
+-            if (queue == null) {
+-                queue = new ArrayDeque<>();
+-                this.callQueue.put(level, queue);
+-            }
+-
+-            queue.add(c);
++            this.callQueue.computeIfAbsent(level, k -> new ConcurrentLinkedQueue<>()).add(c);
+         }
+     }
+ 
+@@ -233,13 +257,9 @@ private void onServerLevelTickStart(LevelTickEvent.Pre event) {
+         if (!(event.getLevel() instanceof ServerLevel level)) {
+             return;
+         }
+-        var queue = this.callQueue.remove(level);
+-        processQueueElementsRemaining += this.processQueue(queue, level);
+-        var newQueue = this.callQueue.put(level, queue);
+-        // Some new tasks may have been added while we were processing the queue
+-        if (newQueue != null) {
+-            queue.addAll(newQueue);
+-        }
++        var queue = this.callQueue.get(level);
++        // Bounded to the entries present now: tasks added while draining run next tick
++        processQueueElementsRemaining += this.processQueue(queue, level, queue == null ? 0 : queue.size());
+ 
+         // tick networks
+         this.grids.updateNetworks();
+@@ -306,7 +326,7 @@ private void onServerTickEnd(ServerTickEvent.Post event) {
+         }
+ 
+         // cross level queue.
+-        processQueueElementsRemaining += this.processQueue(this.serverQueue, null);
++        processQueueElementsRemaining += this.processQueue(this.serverQueue, null, Integer.MAX_VALUE);
+ 
+         if (this.stopWatch.elapsed(TimeUnit.MILLISECONDS) > TIME_LIMIT_PROCESS_QUEUE_MILLISECONDS) {
+             AELog.warn("Exceeded time limit of %d ms after processing %d queued tick callbacks (%d remain)",
+@@ -353,14 +373,12 @@ private void simulateCraftingJobs(LevelAccessor level) {
+      * Ready the block entities in this level. server-side only.
+      */
+     private void readyBlockEntities(ServerLevel level) {
+-        var levelQueue = blockEntities.getBlockEntities(level);
+-        if (levelQueue == null) {
++        // Make a copy because this set may be modified when new chunks are loaded by an onReady call below
++        long[] workSet = blockEntities.pendingChunks(level);
++        if (workSet == null) {
+             return;
+         }
+ 
+-        // Make a copy because this set may be modified when new chunks are loaded by an onReady call below
+-        long[] workSet = levelQueue.keySet().toLongArray();
+-
+         for (long packedChunkPos : workSet) {
+             // Readies all of our block entities in this chunk as soon as it can tick BEs
+             // The following test is equivalent to ServerLevel#isPositionTickingWithEntitiesLoaded
+@@ -368,7 +386,7 @@ private void readyBlockEntities(ServerLevel level) {
+                 // Take the currently waiting block entities for this chunk and ready them all. Should more block
+                 // entities be added to this chunk while we're working on it, a new list will be added automatically and
+                 // we'll work on this chunk again next tick.
+-                var chunkQueue = levelQueue.remove(packedChunkPos);
++                var chunkQueue = blockEntities.takeChunk(level, packedChunkPos);
+                 if (chunkQueue == null) {
+                     AELog.warn("Chunk %s was unloaded while we were readying block entities",
+                             new ChunkPos(packedChunkPos));
+@@ -403,9 +421,10 @@ private void readyBlockEntities(ServerLevel level) {
+      *
+      * @param queue the queue to process
+      * @param level the level in which the queue is processed or null for the server queue
++     * @param limit maximum number of callbacks to run
+      * @return the amount of remaining callbacks
+      */
+-    private int processQueue(Queue<ILevelRunnable> queue, Level level) {
++    private int processQueue(Queue<ILevelRunnable> queue, Level level, int limit) {
+         if (queue == null) {
+             return 0;
+         }
+@@ -413,10 +432,10 @@ private int processQueue(Queue<ILevelRunnable> queue, Level level) {
+         // start the clock
+         stopWatch.start();
+ 
+-        while (!queue.isEmpty()) {
++        ILevelRunnable next;
++        while (limit-- > 0 && (next = queue.poll()) != null) {
+             try {
+-                // call the first queue element.
+-                queue.poll().call(level);
++                next.call(level);
+                 this.processQueueElementsProcessed++;
+ 
+                 if (stopWatch.elapsed(TimeUnit.MILLISECONDS) > TIME_LIMIT_PROCESS_QUEUE_MILLISECONDS) {
+diff --git a/src/main/java/appeng/me/GridEventBus.java b/src/main/java/appeng/me/GridEventBus.java
+index 525b3f962..74abf2a78 100644
+--- a/src/main/java/appeng/me/GridEventBus.java
++++ b/src/main/java/appeng/me/GridEventBus.java
+@@ -18,21 +18,21 @@
+ 
+ package appeng.me;
+ 
+-import java.util.ArrayList;
+-import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.CopyOnWriteArrayList;
+ import java.util.function.BiConsumer;
+ 
+ import appeng.api.networking.IGrid;
+ import appeng.api.networking.events.GridEvent;
+ 
+ public final class GridEventBus {
+-    private static final Map<Class<? extends GridEvent>, Subscriptions<?>> EVENTS = new HashMap<>();
++    private static final Map<Class<? extends GridEvent>, Subscriptions<?>> EVENTS = new ConcurrentHashMap<>();
+ 
+     private static class Subscriptions<T extends GridEvent> {
+         private final Class<T> eventClass;
+-        private final List<BiConsumer<IGrid, T>> handlers = new ArrayList<>();
++        private final List<BiConsumer<IGrid, T>> handlers = new CopyOnWriteArrayList<>();
+ 
+         private Subscriptions(Class<T> eventClass) {
+             this.eventClass = eventClass;
+@@ -55,7 +55,11 @@ private GridEventBus() {
+ 
+     @SuppressWarnings("unchecked")
+     private static <T extends GridEvent> Subscriptions<T> getSubscriptions(Class<T> eventClass) {
+-        return (Subscriptions<T>) EVENTS.computeIfAbsent(eventClass, Subscriptions::new);
++        var existing = EVENTS.get(eventClass);
++        if (existing == null) {
++            existing = EVENTS.computeIfAbsent(eventClass, Subscriptions::new);
++        }
++        return (Subscriptions<T>) existing;
+     }
+ 
+     public static <T extends GridEvent> void subscribe(Class<T> eventClass, BiConsumer<IGrid, T> handler) {
+diff --git a/src/main/java/appeng/recipes/transform/TransformLogic.java b/src/main/java/appeng/recipes/transform/TransformLogic.java
+index cb56dd9e8..9e5145744 100644
+--- a/src/main/java/appeng/recipes/transform/TransformLogic.java
++++ b/src/main/java/appeng/recipes/transform/TransformLogic.java
+@@ -6,6 +6,7 @@
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
+ import java.util.function.Predicate;
+ 
+ import com.google.common.collect.Lists;
+@@ -113,12 +114,14 @@ public static boolean tryTransform(ItemEntity entity, Predicate<TransformCircums
+     }
+ 
+     // not using a Multimap here because we need to cache the empty set
+-    static Map<Fluid, Set<Item>> fluidCache = new IdentityHashMap<>();
+-    static Set<Item> explosionCache = null;
+-    static Set<Item> anyFluidCache = null;
++    // Read from ItemEntity.tick on region workers. Values are never mutated after publication; invalidate by
++    // replacement.
++    static volatile Map<Fluid, Set<Item>> fluidCache = new ConcurrentHashMap<>();
++    static volatile Set<Item> explosionCache = null;
++    static volatile Set<Item> anyFluidCache = null;
+ 
+     private static void clearCache() {
+-        fluidCache.clear();
++        fluidCache = new ConcurrentHashMap<>();
+         explosionCache = null;
+         anyFluidCache = null;
+     }
